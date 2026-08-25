@@ -1,0 +1,9 @@
+{"ts": 1787661497.517215, "iso": "2026-08-25T12:38:17", "step": "1_verify_target", "target": "b", "backend": "fs", "state": {"region": "b", "pool_state": "warm", "weights": true, "count": 319, "latest_doc_ts": 1787661203.9612036, "ts": 1787661497.5141997}}
+{"ts": 1787661497.5503, "iso": "2026-08-25T12:38:17", "step": "2_restore_snapshot", "target": "b", "backend": "fs", "rpo_seconds": 4.0, "docs_lost": 4, "embed_model_version": "embed-model=vi-e5-base@v3", "snapshot_meta": {"snapshot_at": 1787661494.0081515, "source_region": "a", "latest_doc_ts": 1787661493.0182912, "embed_model_version": "embed-model=vi-e5-base@v3", "restored_at": 1787661497.5436823}}
+{"ts": 1787661497.551438, "iso": "2026-08-25T12:38:17", "step": "3_scale_pool", "target": "b", "pool_state": "full"}
+{"ts": 1787661504.1519225, "iso": "2026-08-25T12:38:24", "step": "4_wait_ready", "target": "b", "ready": true, "waited_s": 6.6}
+{"ts": 1787661504.1519225, "iso": "2026-08-25T12:38:24", "step": "5_dns_cutover", "target": "b", "active_region": "b"}
+{"ts": 1787661607.3301642, "iso": "2026-08-25T12:40:07", "step": "1_verify_target", "target": "b", "backend": "fs", "state": {"region": "b", "pool_state": "warm"}}
+{"ts": 1787661607.33482, "iso": "2026-08-25T12:40:07", "step": "2_restore_snapshot", "target": "b", "backend": "fs", "rpo_seconds": 25.03, "docs_lost": 25, "embed_model_version": "test", "snapshot_meta": {"snapshot_at": 1787661607.3301642, "latest_doc_ts": 1787661607.3301642, "embed_model_version": "test"}}
+{"ts": 1787661607.335329, "iso": "2026-08-25T12:40:07", "step": "3_scale_pool", "target": "b", "pool_state": "full"}
+{"ts": 1787661608.5383549, "iso": "2026-08-25T12:40:08", "step": "4_wait_ready", "target": "b", "ready": false, "waited_s": 1.2, "error": "timeout", "reason": "ConnectError"}

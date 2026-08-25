@@ -1,0 +1,4 @@
+{"ts": 1787653716.1560333, "iso": "2026-08-25T10:28:36", "action": "kill", "region": "a", "mode": "netblock", "backend": "bare", "mock": true, "other_region": "b", "other_alive": true, "forced_both": false, "note": "RTO clock start for baseline drill"}
+{"ts": 1787653748.072148, "iso": "2026-08-25T10:29:08", "action": "restore", "region": "a", "method": "NtResumeProcess", "pid": 15996}
+{"ts": 1787661486.9060683, "iso": "2026-08-25T12:38:06", "action": "kill", "region": "a", "mode": "netblock", "backend": "bare", "mock": true, "other_region": "b", "other_alive": true, "forced_both": false, "note": "RTO clock start for final DR drill"}
+{"ts": 1787661524.6557417, "iso": "2026-08-25T12:38:44", "action": "restore", "region": "a", "method": "NtResumeProcess", "pid": 15996}

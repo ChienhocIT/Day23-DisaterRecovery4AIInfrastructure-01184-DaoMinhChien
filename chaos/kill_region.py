@@ -26,11 +26,13 @@ PHẢI truyền `--backend bare` tường minh, nếu không nó mặc định `
 trên máy không có Docker daemon (`docker compose ... start` thất bại).
 """
 import argparse
+import ctypes
 import json
 import os
 import pathlib
 import signal
 import subprocess
+import sys
 import time
 
 import httpx
@@ -38,6 +40,22 @@ import httpx
 EVENTS = pathlib.Path("chaos/chaos-events.jsonl")
 PID_DIR = pathlib.Path("run")
 URL = {"a": "http://127.0.0.1:8001", "b": "http://127.0.0.1:8002"}
+
+
+def _set_windows_suspend(pid: int, resume: bool) -> None:
+    """Suspend/resume a child process on Windows, where SIGSTOP/SIGCONT do not exist."""
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    handle = kernel32.OpenProcess(0x0800, False, pid)  # PROCESS_SUSPEND_RESUME
+    if not handle:
+        raise OSError(ctypes.get_last_error(), f"cannot open process {pid}")
+    try:
+        ntdll = ctypes.WinDLL("ntdll")
+        operation = ntdll.NtResumeProcess if resume else ntdll.NtSuspendProcess
+        status = operation(handle)
+        if status != 0:
+            raise OSError(f"Nt{'Resume' if resume else 'Suspend'}Process failed: {status}")
+    finally:
+        kernel32.CloseHandle(handle)
 
 
 def event(**kw):
@@ -68,6 +86,14 @@ def pid_of(region: str) -> int | None:
     if not f.exists():
         return None
     pid = int(f.read_text().strip())
+    if os.name == "nt":
+        result = subprocess.run(
+            ["tasklist", "/FI", f"PID eq {pid}", "/NH", "/FO", "CSV"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        return pid if f'"{pid}"' in result.stdout else None
     try:
         os.kill(pid, 0)
         return pid
@@ -86,17 +112,23 @@ def kill(region: str, mode: str, backend: str, force_both: bool, mock: bool):
             f"CHAN LAI: region-{other} dang khong sống. Chạy `restore --region {other}` trước.\n"
             f"(Muốn ép: --i-really-want-both, nhưng drill sẽ bị đánh dấu INVALID.)")
 
-    ev = event(action="kill", region=region, mode=mode, backend=backend, mock=mock,
-               other_region=other, other_alive=other_alive, forced_both=force_both,
-               note="t_outage_start — moc 0 cua RTO clock")
     if backend == "bare":
         pid = pid_of(region)
         if pid is None:
             raise SystemExit(f"khong tim thay PID cua region-{region} trong {PID_DIR}")
+    ev = event(action="kill", region=region, mode=mode, backend=backend, mock=mock,
+               other_region=other, other_alive=other_alive, forced_both=force_both,
+               note="t_outage_start — moc 0 cua RTO clock")
+    if backend == "bare":
         # netblock: SIGSTOP -> TCP handshake vẫn xong nhưng không ai trả lời => request TREO
         #           (đúng hành vi của iptables DROP ở tầng app)
         # stop    : SIGKILL -> cổng đóng => ConnectError ngay
-        os.kill(pid, signal.SIGSTOP if mode == "netblock" else signal.SIGKILL)
+        if os.name == "nt" and mode == "netblock":
+            _set_windows_suspend(pid, resume=False)
+            return ev
+        sig_stop = getattr(signal, "SIGSTOP", getattr(signal, "SIGTERM", 15))
+        sig_kill = getattr(signal, "SIGKILL", getattr(signal, "SIGTERM", 15))
+        os.kill(pid, sig_stop if mode == "netblock" else sig_kill)
     else:
         svc = f"serving-{region}"
         if mode == "stop":
@@ -110,11 +142,35 @@ def kill(region: str, mode: str, backend: str, force_both: bool, mock: bool):
 def restore(region: str, backend: str):
     if backend == "bare":
         pid = pid_of(region)
-        if pid:
-            os.kill(pid, signal.SIGCONT)
-            return event(action="restore", region=region, method="SIGCONT", pid=pid)
-        return event(action="restore", region=region, method="need_manual_start",
-                     note="process da bi SIGKILL, chay `make up-bare` lai")
+        if pid and os.name == "nt":
+            try:
+                _set_windows_suspend(pid, resume=True)
+                return event(action="restore", region=region, method="NtResumeProcess", pid=pid)
+            except OSError:
+                pass
+        sig_cont = getattr(signal, "SIGCONT", None)
+        if pid and sig_cont is not None:
+            try:
+                os.kill(pid, sig_cont)
+                return event(action="restore", region=region, method="SIGCONT", pid=pid)
+            except OSError:
+                pass
+        # Restart process if terminated
+        port = "8001" if region == "a" else "8002"
+        env = os.environ.copy()
+        env.update({"REGION": region, "STATE_DIR": f"state/region-{region}", "WARMUP_SECONDS": "6"})
+        log = open(PID_DIR / f"region-{region}.log", "a", encoding="utf-8")
+        flags = 0
+        if os.name == "nt":
+            flags = subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.DETACHED_PROCESS
+        p = subprocess.Popen(
+            [sys.executable, "-m", "uvicorn", "serving.app:app", "--host", "127.0.0.1",
+             "--port", port, "--log-level", "warning"],
+            env=env, stdout=log, stderr=subprocess.STDOUT, creationflags=flags
+        )
+        (PID_DIR / f"region-{region}.pid").write_text(str(p.pid))
+        time.sleep(1.0)
+        return event(action="restore", region=region, method="restarted_process", pid=p.pid)
     subprocess.run(["docker", "compose", "start", f"serving-{region}"], check=False)
     subprocess.run(["docker", "exec", "--privileged", f"serving-{region}", "iptables", "-F",
                     "INPUT"], check=False)

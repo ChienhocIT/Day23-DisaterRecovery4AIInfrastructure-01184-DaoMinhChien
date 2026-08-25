@@ -38,19 +38,126 @@ LOG = pathlib.Path("reports/runbook-run.jsonl")
 URL = {"a": "http://127.0.0.1:8001", "b": "http://127.0.0.1:8002"}
 
 
-def step(n, name, **kw):
-    """TODO: ghi 1 dòng {ts, iso, step, name, ...} vào LOG."""
-    raise NotImplementedError
+def step(n, name, **kw) -> dict:
+    """Ghi 1 dòng {ts, iso, step, name, ...} vào LOG."""
+    LOG.parent.mkdir(parents=True, exist_ok=True)
+    t = time.time()
+    rec = {
+        "ts": t,
+        "iso": time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime(t)),
+        "step": n,
+        "name": name,
+        **kw,
+    }
+    with LOG.open("a", encoding="utf-8") as f:
+        f.write(json.dumps(rec) + "\n")
+    print(f"RUNBOOK STEP {n} ({name}):", json.dumps(rec))
+    return rec
 
 
 def confirm(auto: bool, msg: str) -> bool:
-    """TODO: auto=True -> True; ngược lại hỏi y/N. Đừng bỏ hàm này đi."""
-    raise NotImplementedError
+    """auto=True -> True; ngược lại hỏi y/N."""
+    if auto:
+        return True
+    try:
+        ans = input(f"{msg} [y/N]: ").strip().lower()
+        return ans == "y"
+    except Exception:
+        return False
 
 
 def run(primary: str, target: str, backend: str, auto: bool) -> dict:
-    """TODO: 7 bước ở trên."""
-    raise NotImplementedError
+    """7 bước runbook theo đúng tài liệu §4."""
+    t_start = time.time()
+
+    # Bước 1: 1_xac_nhan_outage
+    p_alive = False
+    p_url = URL.get(primary, "http://127.0.0.1:8001" if primary == "a" else "http://127.0.0.1:8002")
+    try:
+        r = httpx.get(f"{p_url}/readyz", timeout=1.5)
+        p_alive = (r.status_code == 200)
+    except Exception:
+        p_alive = False
+
+    t_url = URL.get(target, "http://127.0.0.1:8001" if target == "a" else "http://127.0.0.1:8002")
+    t_alive = False
+    try:
+        r = httpx.get(f"{t_url}/healthz", timeout=1.5)
+        t_alive = (r.status_code == 200)
+    except Exception:
+        t_alive = False
+
+    step(1, "xac_nhan_outage", primary=primary, target=target, primary_alive=p_alive, target_alive=t_alive)
+
+    # Bước 2: 2_thong_bao_incident
+    if not confirm(auto, f"Xác nhận thực hiện failover từ region {primary} sang region {target}?"):
+        step(2, "thong_bao_incident", action="aborted_by_operator")
+        return {"ok": False, "aborted": True}
+
+    step(2, "thong_bao_incident", primary=primary, target=target, auto=auto, confirmed=True)
+
+    # Bước 3: 3_scale_gpu_pool (gọi failover DUY NHẤT 1 lần)
+    fo_res = fo.failover(target=target, backend=backend, wait=60.0)
+    step(3, "scale_gpu_pool", target=target, failover_ok=fo_res.get("ok"))
+    if not fo_res.get("ok"):
+        return {"ok": False, "step": 3, "failover": fo_res}
+
+    # Bước 4: 4_verify_state_replica
+    step(
+        4,
+        "verify_state_replica",
+        target=target,
+        vector_count=fo_res.get("count"),
+        weights=fo_res.get("weights"),
+        rpo_seconds=fo_res.get("rpo_seconds"),
+        docs_lost=fo_res.get("docs_lost"),
+        embed_model_version=fo_res.get("embed_model_version"),
+    )
+
+    # Bước 5: 5_dns_cutover
+    step(5, "dns_cutover", active_region=target, cutover_ok=fo_res.get("ok"))
+
+    # Bước 6: 6_verify_golden_signals (10 requests thật trực tiếp tới target)
+    latencies = []
+    statuses = []
+    target_infer_url = f"{t_url}/v1/infer"
+    with httpx.Client(timeout=3.0) as client:
+        for i in range(10):
+            t0 = time.time()
+            try:
+                res = client.get(target_infer_url, params={"q": f"probe query {i}"})
+                lat_ms = (time.time() - t0) * 1000.0
+                latencies.append(lat_ms)
+                statuses.append(res.status_code)
+            except Exception:
+                lat_ms = (time.time() - t0) * 1000.0
+                latencies.append(lat_ms)
+                statuses.append(503)
+            time.sleep(0.05)
+
+    p95_ms = sorted(latencies)[int(len(latencies) * 0.95)] if latencies else 0.0
+    err_rate = (sum(1 for s in statuses if s != 200) / len(statuses)) if statuses else 1.0
+    step(6, "verify_golden_signals", requests=len(latencies), p95_ms=round(p95_ms, 1), error_rate=err_rate)
+
+    # Bước 7: 7_post_incident
+    elapsed_s = round(time.time() - t_start, 2)
+    step(
+        7,
+        "post_incident",
+        elapsed_s=elapsed_s,
+        measure_cmd="python tools/measure_rto.py --loadgen reports/drill-2-withdr.jsonl",
+    )
+
+    return {
+        "ok": True,
+        "primary": primary,
+        "target": target,
+        "elapsed_s": elapsed_s,
+        "rpo_seconds": fo_res.get("rpo_seconds"),
+        "docs_lost": fo_res.get("docs_lost"),
+        "p95_ms": round(p95_ms, 1),
+        "error_rate": err_rate,
+    }
 
 
 if __name__ == "__main__":

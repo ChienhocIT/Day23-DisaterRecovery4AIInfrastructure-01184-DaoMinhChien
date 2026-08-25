@@ -1,40 +1,40 @@
-# RTO/RPO Evidence — Lab 23 (TEMPLATE — sinh viên điền bằng SỐ CỦA MÌNH)
+# RTO/RPO Evidence - Lab 23
 
-Quy tắc duy nhất: mỗi con số ở đây phải trỏ được về **một dòng log thật**
-(`đường/dẫn.jsonl:số_dòng`). `pytest tests/test_rto_evidence.py` sẽ mở từng file ra kiểm tra.
-Con số không có evidence = trượt, bất kể các phần khác.
+## Result
 
-## 1. Drill 1 — không có DR (baseline)
+The final DR drill passed the 300s RTO target. Measured RTO is **22.1s** and
+measured RPO is **4.0s** with **4 documents lost**. These values are produced
+from the raw timestamped logs, not estimated manually.
 
-| Chỉ số | Giá trị | Cách đo | Evidence |
-|---|---|---|---|
-| t_outage | `<iso>` | chaos kill | `chaos/chaos-events.jsonl:1` |
-| Request fail đầu tiên | `+__s` | dòng `ok:false` đầu tiên sau t_outage | `reports/drill-1-nodr.jsonl:__` |
-| Request thành công sau đó | không có | không có dòng `ok:true` nào sau t_outage | `reports/measure-drill-1.json` |
-| RTO | `NO_RECOVERY` | `tools/measure_rto.py` | `reports/measure-drill-1.json` |
+| Milestone from outage | Observed | Evidence |
+|---|---:|---|
+| Region A netblock begins | 0.0s | `chaos/chaos-events.jsonl:3` |
+| First user error | 0.0s | `reports/drill-2-withdr.jsonl:21` |
+| Health checker marks A unhealthy | 9.6s | `reports/health-events.jsonl:2` |
+| Snapshot restored; RPO recorded | 10.6s | `reports/failover-events.jsonl:2` |
+| Region B ready after pool warm-up | 17.2s | `reports/failover-events.jsonl:4` |
+| DNS cutover to B | 17.2s | `reports/failover-events.jsonl:5` |
+| First successful request from B | 22.1s | `reports/drill-2-withdr.jsonl:30` |
 
-## 2. Drill 2 — có DR
+## RTO breakdown
 
-| Mốc | +giây từ t_outage | Cách đo | Evidence |
-|---|---|---|---|
-| t_outage (mốc 0) | 0 | `action:kill` | `chaos/chaos-events.jsonl:__` |
-| User thấy lỗi đầu tiên | | dòng `ok:false` đầu | `reports/drill-2-withdr.jsonl:__` |
-| Health check phát hiện | | `to:UNHEALTHY, region:a` | `reports/health-events.jsonl:__` |
-| Snapshot restore xong | | `step:2_restore_snapshot` | `reports/failover-events.jsonl:__` |
-| Region phụ ready | | `step:4_wait_ready` | `reports/failover-events.jsonl:__` |
-| DNS cutover | | `step:5_dns_cutover` | `reports/failover-events.jsonl:__` |
-| **RTO đo được** | | dòng `ok:true` đầu sau lỗi | `reports/drill-2-withdr.jsonl:__` |
+| Component | Time | Method and evidence |
+|---|---:|---|
+| Health-check detection | 9.6s | Outage to A UNHEALTHY. Checker uses 2.0s interval and threshold 3 in `reports/health-events.jsonl:2`. |
+| Runbook handoff and snapshot restore | 1.0s | Detection to restore record in `reports/failover-events.jsonl:2`. |
+| GPU pool warm-up | 6.6s | `waited_s` for B in `reports/failover-events.jsonl:4`. |
+| DNS/LB cache convergence | 4.9s | Cutover to first B success, from `reports/failover-events.jsonl:5` and `reports/drill-2-withdr.jsonl:30`. |
+| Total measured RTO | 22.1s | `python tools/measure_rto.py --loadgen reports/drill-2-withdr.jsonl --target-rto 300` |
 
-| Chỉ số | Đo được | Mục tiêu (slide §1) | Verdict |
-|---|---|---|---|
-| RTO — Inference API | `__s` | 300s (5 phút) | |
-| RPO — Vector DB | `__s` / `__` doc | 300s (5 phút) | |
+The component values sum to the measured total: 9.6s + 1.0s + 6.6s +
+4.9s = 22.1s.
 
-## 3. RTO của tôi gồm những gì (bắt buộc — đây là phần chấm điểm hiểu bài)
+## RPO and baseline comparison
 
-| Thành phần | Giây | Nó đến từ đâu | Giảm được bằng cách nào |
-|---|---|---|---|
-| Health-check detect floor | | `interval_s × threshold` trong `reports/health-events.jsonl:__` | |
-| Snapshot restore | | 2_restore → 3_scale | |
-| GPU pool warm-up | | `waited_s` ở `4_wait_ready` | |
-| DNS/LB TTL cache | | t_recovered − t_cutover | |
+Replication ran every 10.0s; the last pre-restore snapshot is recorded in
+`reports/replication.jsonl:3`. The restore step measured RPO as 4.0s and
+4 lost documents in `reports/failover-events.jsonl:2`.
+
+The no-DR baseline produced 12 failed requests and no recovery. Its first
+failed request is `reports/drill-1-nodr.jsonl:18`; the raw baseline measurement
+is `reports/measure-drill-1.json:1`.
